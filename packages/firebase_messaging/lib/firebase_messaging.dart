@@ -3,10 +3,12 @@
 // found in the LICENSE file.
 
 import 'dart:async';
+import 'dart:ui';
 
 import 'package:flutter/services.dart';
 import 'package:meta/meta.dart';
 import 'package:platform/platform.dart';
+import 'package:firebase_messaging/background_callback_handler.dart';
 
 typedef Future<dynamic> MessageHandler(Map<String, dynamic> message);
 
@@ -66,7 +68,15 @@ class FirebaseMessaging {
     _onLaunch = onLaunch;
     _onResume = onResume;
     _channel.setMethodCallHandler(_handleMethod);
-    _channel.invokeMethod<void>('configure');
+
+    //registers the the background callback handler so messages can be received when the app is backgrounded
+    final CallbackHandle callback = PluginUtilities.getCallbackHandle(backgroundCallbackHandler);
+    _channel.invokeMethod<void>('configure', <dynamic>[callback.toRawHandle()]);
+
+    //registers the onMessage function to be invoked when a message is received in the background
+    final CallbackHandle messageCallback = PluginUtilities.getCallbackHandle(onMessage);
+    assert(messageCallback!=null, "Unable to register onMessage function for background callbacks. Ensure the function is a top leve or static function");
+    _channel.invokeMethod<void>('setMessageReceivedCallback', <dynamic>[messageCallback.toRawHandle()]);
   }
 
   final StreamController<String> _tokenStreamController =

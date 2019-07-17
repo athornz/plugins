@@ -19,18 +19,34 @@ static FlutterError *getFlutterError(NSError *error) {
                              details:error.localizedDescription];
 }
 
+
+static NSString* callbackDispatchHandler = @"callback_dispatch_handler";
+static NSString* messageReceivedHandler = @"message_received_handler";
+static BOOL initialized = NO;
+static FlutterPluginRegistrantCallback registerPlugins = nil;
+
 @implementation FLTFirebaseMessagingPlugin {
   FlutterMethodChannel *_channel;
+  FlutterMethodChannel *_isolateChannel;
   NSDictionary *_launchNotification;
   BOOL _resumingFromBackground;
+  NSUserDefaults *_userDefaults;
+  NSObject<FlutterPluginRegistrar> *_registrar;
+  NSMutableArray *_eventQueue;
+  FlutterEngine *_headlessRunner;
+}
+
++ (void)setPluginRegistrantCallback:(FlutterPluginRegistrantCallback)callback {
+    registerPlugins = callback;
 }
 
 + (void)registerWithRegistrar:(NSObject<FlutterPluginRegistrar> *)registrar {
   FlutterMethodChannel *channel =
       [FlutterMethodChannel methodChannelWithName:@"plugins.flutter.io/firebase_messaging"
                                   binaryMessenger:[registrar messenger]];
+    
   FLTFirebaseMessagingPlugin *instance =
-      [[FLTFirebaseMessagingPlugin alloc] initWithChannel:channel];
+    [[FLTFirebaseMessagingPlugin alloc] initWithChannel:channel registrar:registrar];
   [registrar addApplicationDelegate:instance];
   [registrar addMethodCallDelegate:instance channel:channel];
 
@@ -40,23 +56,31 @@ static FlutterError *getFlutterError(NSError *error) {
   }
 }
 
-- (instancetype)initWithChannel:(FlutterMethodChannel *)channel {
+- (instancetype)initWithChannel:(FlutterMethodChannel *)channel registrar:(NSObject<FlutterPluginRegistrar> *)registrar {
   self = [super init];
 
   if (self) {
     _channel = channel;
     _resumingFromBackground = NO;
+      
     if (![FIRApp appNamed:@"__FIRAPP_DEFAULT"]) {
       NSLog(@"Configuring the default Firebase app...");
       [FIRApp configure];
       NSLog(@"Configured the default Firebase app %@.", [FIRApp defaultApp].name);
     }
     [FIRMessaging messaging].delegate = self;
+      
+    _userDefaults = [NSUserDefaults standardUserDefaults];
+    _eventQueue = [[NSMutableArray alloc] init];
+    _registrar = registrar;
+    _headlessRunner = [[FlutterEngine alloc] initWithName:@"firebase_messaging_isolate" project:nil allowHeadlessExecution:YES];
+    _isolateChannel = [FlutterMethodChannel methodChannelWithName:@"plugins.flutter.io/firebase_messaging_isolate" binaryMessenger:[_headlessRunner binaryMessenger]];
   }
   return self;
 }
 
 - (void)handleMethodCall:(FlutterMethodCall *)call result:(FlutterResult)result {
+  NSLog(@"Received method call: %@", call.method);
   NSString *method = call.method;
   if ([@"requestNotificationPermissions" isEqualToString:method]) {
     UIUserNotificationType notificationTypes = 0;
@@ -81,6 +105,11 @@ static FlutterError *getFlutterError(NSError *error) {
     if (_launchNotification != nil) {
       [_channel invokeMethod:@"onLaunch" arguments:_launchNotification];
     }
+      
+    //registers background callback dispatcher
+    long handle = [call.arguments[0] longValue];
+    [self setupBackgroundHandling:handle];
+      
     result(nil);
   } else if ([@"subscribeToTopic" isEqualToString:method]) {
     NSString *topic = call.arguments;
@@ -122,6 +151,21 @@ static FlutterError *getFlutterError(NSError *error) {
     NSNumber *value = call.arguments;
     [FIRMessaging messaging].autoInitEnabled = value.boolValue;
     result(nil);
+  } else if ([@"headlessRunnerInitialized" isEqualToString:call.method]) {
+      @synchronized(self) {
+          initialized = YES;
+          while ([_eventQueue count] > 0) {
+              NSArray* call = _eventQueue[0];
+              [_eventQueue removeObjectAtIndex:0];
+              
+              [self invokeMethod:call[0] callbackHandle:[call[1] intValue] arguments:call[2]];
+          }
+      }
+      result(nil);
+  } else if ([@"setMessageReceivedCallback" isEqualToString:method]) {
+      long handle = [call.arguments[0] longValue];
+      [self _saveCallbackHandle:messageReceivedHandler handle:handle];
+      result(nil);
   } else {
     result(FlutterMethodNotImplemented);
   }
@@ -135,8 +179,19 @@ static FlutterError *getFlutterError(NSError *error) {
 #endif
 
 - (void)didReceiveRemoteNotification:(NSDictionary *)userInfo {
+    NSLog(@"didReceiveRemoteNotification");
+
+    
+
   if (_resumingFromBackground) {
-    [_channel invokeMethod:@"onResume" arguments:userInfo];
+      
+      [self queueMethodCall:@"onMessageReceived" callbackName:messageReceivedHandler arguments:userInfo];
+      
+      if (!initialized){
+          [self startBackgroundRunner];
+      }
+      
+            //[_channel invokeMethod:@"onResume" arguments:userInfo];
   } else {
     [_channel invokeMethod:@"onMessage" arguments:userInfo];
   }
@@ -179,7 +234,7 @@ static FlutterError *getFlutterError(NSError *error) {
     didReceiveRemoteNotification:(NSDictionary *)userInfo
           fetchCompletionHandler:(void (^)(UIBackgroundFetchResult result))completionHandler {
   [self didReceiveRemoteNotification:userInfo];
-  completionHandler(UIBackgroundFetchResultNoData);
+  completionHandler(UIBackgroundFetchResultNewData);
   return YES;
 }
 
@@ -211,7 +266,74 @@ static FlutterError *getFlutterError(NSError *error) {
 
 - (void)messaging:(FIRMessaging *)messaging
     didReceiveMessage:(FIRMessagingRemoteMessage *)remoteMessage {
+    NSLog(@"auraxis didReceiveMessage");
   [_channel invokeMethod:@"onMessage" arguments:remoteMessage.appData];
 }
+
+- (void)setupBackgroundHandling:(int64_t)handle {
+    NSLog(@"Setting up Firebase background handling");
+    [self _saveCallbackHandle:callbackDispatchHandler handle:handle];
+
+    
+    NSLog(@"Finished background setup");
+}
+
+- (void) startBackgroundRunner {
+    NSLog(@"Starting background runner");
+    
+    int64_t handle = [self getCallbackHandle:callbackDispatchHandler];
+    
+    FlutterCallbackInformation *info = [FlutterCallbackCache lookupCallbackInformation:handle];
+    NSAssert(info != nil, @"failed to find callback");
+    NSString *entrypoint = info.callbackName;
+    NSString *uri = info.callbackLibraryPath;
+    
+    [_headlessRunner runWithEntrypoint:entrypoint libraryURI:uri];
+    [_registrar addMethodCallDelegate:self channel:_isolateChannel];
+    
+    // Once our headless runner has been started, we need to register the application's plugins
+    // with the runner in order for them to work on the background isolate. `registerPlugins` is
+    // a callback set from AppDelegate.m in the main application. This callback should register
+    // all relevant plugins (excluding those which require UI).
+    
+    NSAssert(registerPlugins != nil, @"failed to set registerPlugins");
+    registerPlugins(_headlessRunner);
+}
+
+- (int64_t)getCallbackHandle:(NSString *) key {
+    NSLog(@"Getting callback handle for key %@", key);
+    id handle = [_userDefaults objectForKey:key];
+    if (handle == nil) {
+        return 0;
+    }
+    return [handle longLongValue];
+}
+
+- (void)_saveCallbackHandle:(NSString *)key handle:(int64_t)handle {
+    NSLog(@"Saving callback handle for key %@", key);
+    
+    [_userDefaults setObject:[NSNumber numberWithLongLong:handle] forKey:key];
+}
+
+- (void) queueMethodCall:(NSString *) method callbackName:(NSString*)callback arguments:(NSDictionary*)arguments {
+    NSLog(@"Queuing method call: %@", method);
+    int64_t handle = [self getCallbackHandle:callback];
+    
+    @synchronized(self) {
+        if (initialized) {
+            [self invokeMethod:method callbackHandle:handle arguments:arguments];
+        } else {
+            NSArray *call = @[method, @(handle), arguments];
+            [_eventQueue addObject:call];
+        }
+    }
+}
+
+- (void) invokeMethod:(NSString *) method callbackHandle:(long)handle arguments:(NSDictionary*)arguments {
+    NSLog(@"Invoking method: %@", method);
+    NSArray* args = @[@(handle), arguments];
+    [_isolateChannel invokeMethod:method arguments:args];
+}
+
 
 @end
