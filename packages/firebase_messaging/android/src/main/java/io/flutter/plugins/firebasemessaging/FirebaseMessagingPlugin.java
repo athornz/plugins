@@ -10,8 +10,10 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.os.Bundle;
 import android.util.Log;
+
 import androidx.annotation.NonNull;
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
+
 import com.google.android.gms.tasks.OnCompleteListener;
 import com.google.android.gms.tasks.Task;
 import com.google.firebase.FirebaseApp;
@@ -19,24 +21,36 @@ import com.google.firebase.iid.FirebaseInstanceId;
 import com.google.firebase.iid.InstanceIdResult;
 import com.google.firebase.messaging.FirebaseMessaging;
 import com.google.firebase.messaging.RemoteMessage;
+
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
 import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler;
 import io.flutter.plugin.common.MethodChannel.Result;
+import io.flutter.plugin.common.PluginRegistry;
 import io.flutter.plugin.common.PluginRegistry.NewIntentListener;
 import io.flutter.plugin.common.PluginRegistry.Registrar;
-import java.io.IOException;
-import java.util.HashMap;
-import java.util.Map;
+import io.flutter.plugins.firebasemessaging.background.BackgroundHelper;
 
 /** FirebaseMessagingPlugin */
 public class FirebaseMessagingPlugin extends BroadcastReceiver
     implements MethodCallHandler, NewIntentListener {
   private final Registrar registrar;
   private final MethodChannel channel;
+  public static boolean sRegistered = false;
 
   private static final String CLICK_ACTION_VALUE = "FLUTTER_NOTIFICATION_CLICK";
   private static final String TAG = "FirebaseMessagingPlugin";
+
+  public static PluginRegistry.PluginRegistrantCallback sPluginRegistrantCallback;
+
+  public static void setPluginRegistrant(PluginRegistry.PluginRegistrantCallback callback) {
+    sPluginRegistrantCallback = callback;
+  }
 
   public static void registerWith(Registrar registrar) {
     final MethodChannel channel =
@@ -79,7 +93,7 @@ public class FirebaseMessagingPlugin extends BroadcastReceiver
   }
 
   @NonNull
-  private Map<String, Object> parseRemoteMessage(RemoteMessage message) {
+  static Map<String, Object> parseRemoteMessage(RemoteMessage message) {
     Map<String, Object> content = new HashMap<>();
     content.put("data", message.getData());
 
@@ -116,6 +130,10 @@ public class FirebaseMessagingPlugin extends BroadcastReceiver
       if (registrar.activity() != null) {
         sendMessageFromIntent("onLaunch", registrar.activity().getIntent());
       }
+
+      BackgroundHelper.saveCallbackHandle(registrar.context(), BackgroundHelper.KEY_DISPATCHER, (List<Object>) call.arguments);
+      sRegistered = true;
+
       result.success(null);
     } else if ("subscribeToTopic".equals(call.method)) {
       String topic = call.arguments();
@@ -207,9 +225,11 @@ public class FirebaseMessagingPlugin extends BroadcastReceiver
     } else if ("setAutoInitEnabled".equals(call.method)) {
       Boolean isEnabled = (Boolean) call.arguments();
       FirebaseMessaging.getInstance().setAutoInitEnabled(isEnabled);
-      result.success(null);
+        result.success(null);
+    } else if ("setMessageReceivedCallback".equals(call.method)) {
+        BackgroundHelper.saveCallbackHandle(registrar.context(), BackgroundHelper.KEY_MESSAGE_RECEIVED, (List<Object>) call.arguments);
     } else {
-      result.notImplemented();
+        result.notImplemented();
     }
   }
 

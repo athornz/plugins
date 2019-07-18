@@ -5,9 +5,16 @@
 package io.flutter.plugins.firebasemessaging;
 
 import android.content.Intent;
+import android.util.Log;
+
 import androidx.localbroadcastmanager.content.LocalBroadcastManager;
+
 import com.google.firebase.messaging.FirebaseMessagingService;
 import com.google.firebase.messaging.RemoteMessage;
+
+import io.flutter.plugins.firebasemessaging.background.BackgroundHelper;
+
+import static io.flutter.plugins.firebasemessaging.FirebaseMessagingPlugin.parseRemoteMessage;
 
 public class FlutterFirebaseMessagingService extends FirebaseMessagingService {
 
@@ -18,16 +25,29 @@ public class FlutterFirebaseMessagingService extends FirebaseMessagingService {
   public static final String ACTION_TOKEN = "io.flutter.plugins.firebasemessaging.TOKEN";
   public static final String EXTRA_TOKEN = "token";
 
-  /**
+  private BackgroundHelper backgroundHelper;
+
+  @Override
+  public void onCreate() {
+    super.onCreate();
+    backgroundHelper = new BackgroundHelper(this);
+  }
+
+    /**
    * Called when message is received.
    *
    * @param remoteMessage Object representing the message received from Firebase Cloud Messaging.
    */
   @Override
   public void onMessageReceived(RemoteMessage remoteMessage) {
-    Intent intent = new Intent(ACTION_REMOTE_MESSAGE);
-    intent.putExtra(EXTRA_REMOTE_MESSAGE, remoteMessage);
-    LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
+      Intent intent = new Intent(ACTION_REMOTE_MESSAGE);
+      intent.putExtra(EXTRA_REMOTE_MESSAGE, remoteMessage);
+      LocalBroadcastManager.getInstance(this).sendBroadcast(intent);
+
+      if (!FirebaseMessagingPlugin.sRegistered) {
+          //dispatch method on background isolate
+          backgroundHelper.onMessageReceived(parseRemoteMessage(remoteMessage));
+      }
   }
 
   /**
