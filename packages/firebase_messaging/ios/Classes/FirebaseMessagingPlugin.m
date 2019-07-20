@@ -158,7 +158,7 @@ static FlutterPluginRegistrantCallback registerPlugins = nil;
               NSArray* call = _eventQueue[0];
               [_eventQueue removeObjectAtIndex:0];
               
-              [self invokeMethod:call[0] callbackHandle:[call[1] intValue] arguments:call[2]];
+              [self invokeMethod:call[0] callbackHandle:[call[1] longLongValue] arguments:call[2]];
           }
       }
       result(nil);
