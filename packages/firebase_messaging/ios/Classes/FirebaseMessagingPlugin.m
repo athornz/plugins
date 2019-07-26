@@ -61,15 +61,15 @@ static FlutterPluginRegistrantCallback registerPlugins = nil;
 
   if (self) {
     _channel = channel;
-    _resumingFromBackground = NO;
-      
+    _resumingFromBackground = YES;
+
     if (![FIRApp appNamed:@"__FIRAPP_DEFAULT"]) {
       NSLog(@"Configuring the default Firebase app...");
       [FIRApp configure];
       NSLog(@"Configured the default Firebase app %@.", [FIRApp defaultApp].name);
     }
     [FIRMessaging messaging].delegate = self;
-      
+
     _userDefaults = [NSUserDefaults standardUserDefaults];
     _eventQueue = [[NSMutableArray alloc] init];
     _registrar = registrar;
@@ -105,11 +105,11 @@ static FlutterPluginRegistrantCallback registerPlugins = nil;
     if (_launchNotification != nil) {
       [_channel invokeMethod:@"onLaunch" arguments:_launchNotification];
     }
-      
+
     //registers background callback dispatcher
     long handle = [call.arguments[0] longValue];
     [self setupBackgroundHandling:handle];
-      
+
     result(nil);
   } else if ([@"subscribeToTopic" isEqualToString:method]) {
     NSString *topic = call.arguments;
@@ -157,7 +157,7 @@ static FlutterPluginRegistrantCallback registerPlugins = nil;
           while ([_eventQueue count] > 0) {
               NSArray* call = _eventQueue[0];
               [_eventQueue removeObjectAtIndex:0];
-              
+
               [self invokeMethod:call[0] callbackHandle:[call[1] longLongValue] arguments:call[2]];
           }
       }
@@ -174,6 +174,7 @@ static FlutterPluginRegistrantCallback registerPlugins = nil;
 #if defined(__IPHONE_10_0) && __IPHONE_OS_VERSION_MAX_ALLOWED >= __IPHONE_10_0
 // Receive data message on iOS 10 devices while app is in the foreground.
 - (void)applicationReceivedRemoteMessage:(FIRMessagingRemoteMessage *)remoteMessage {
+     NSLog(@"applicationReceivedRemoteMessage");
   [self didReceiveRemoteNotification:remoteMessage.appData];
 }
 #endif
@@ -181,17 +182,8 @@ static FlutterPluginRegistrantCallback registerPlugins = nil;
 - (void)didReceiveRemoteNotification:(NSDictionary *)userInfo {
     NSLog(@"didReceiveRemoteNotification");
 
-    
-
   if (_resumingFromBackground) {
-      
-      [self queueMethodCall:@"onMessageReceived" callbackName:messageReceivedHandler arguments:userInfo];
-      
-      if (!initialized){
-          [self startBackgroundRunner];
-      }
-      
-            //[_channel invokeMethod:@"onResume" arguments:userInfo];
+      [_channel invokeMethod:@"onResume" arguments:userInfo];
   } else {
     [_channel invokeMethod:@"onMessage" arguments:userInfo];
   }
@@ -233,7 +225,18 @@ static FlutterPluginRegistrantCallback registerPlugins = nil;
 - (bool)application:(UIApplication *)application
     didReceiveRemoteNotification:(NSDictionary *)userInfo
           fetchCompletionHandler:(void (^)(UIBackgroundFetchResult result))completionHandler {
+
+    if (application.applicationState == UIApplicationStateBackground){
+        [self queueMethodCall:@"onMessageReceived" callbackName:messageReceivedHandler arguments:userInfo];
+
+        if (!initialized){
+            [self startBackgroundRunner];
+        }
+
+    }else{
   [self didReceiveRemoteNotification:userInfo];
+    }
+
   completionHandler(UIBackgroundFetchResultNewData);
   return YES;
 }
@@ -266,14 +269,12 @@ static FlutterPluginRegistrantCallback registerPlugins = nil;
 
 - (void)messaging:(FIRMessaging *)messaging
     didReceiveMessage:(FIRMessagingRemoteMessage *)remoteMessage {
-    NSLog(@"auraxis didReceiveMessage");
   [_channel invokeMethod:@"onMessage" arguments:remoteMessage.appData];
 }
 
 - (void)setupBackgroundHandling:(int64_t)handle {
     NSLog(@"Setting up Firebase background handling");
     [self _saveCallbackHandle:callbackDispatchHandler handle:handle];
-
     
     NSLog(@"Finished background setup");
 }
