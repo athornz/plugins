@@ -22,8 +22,8 @@ static FlutterError *getFlutterError(NSError *error) {
 
 static NSString* callbackDispatchHandler = @"callback_dispatch_handler";
 static NSString* messageReceivedHandler = @"message_received_handler";
-static BOOL initialized = NO;
 static FlutterPluginRegistrantCallback registerPlugins = nil;
+typedef void (^FetchCompletionHandler)(UIBackgroundFetchResult result);
 
 @implementation FLTFirebaseMessagingPlugin {
   FlutterMethodChannel *_channel;
@@ -34,6 +34,8 @@ static FlutterPluginRegistrantCallback registerPlugins = nil;
   NSObject<FlutterPluginRegistrar> *_registrar;
   NSMutableArray *_eventQueue;
   FlutterEngine *_headlessRunner;
+  BOOL initialized;
+  FetchCompletionHandler fetchCompletionHandler;
 }
 
 + (void)setPluginRegistrantCallback:(FlutterPluginRegistrantCallback)callback {
@@ -227,17 +229,19 @@ static FlutterPluginRegistrantCallback registerPlugins = nil;
           fetchCompletionHandler:(void (^)(UIBackgroundFetchResult result))completionHandler {
 
     if (application.applicationState == UIApplicationStateBackground){
+        //save this handler for later so it can be completed
+        fetchCompletionHandler = completionHandler;
+        
         [self queueMethodCall:@"onMessageReceived" callbackName:messageReceivedHandler arguments:userInfo];
-
+        
         if (!initialized){
             [self startBackgroundRunner];
         }
 
-    }else{
-  [self didReceiveRemoteNotification:userInfo];
+    } else {
+        [self didReceiveRemoteNotification:userInfo];
+        completionHandler(UIBackgroundFetchResultNewData);
     }
-
-  completionHandler(UIBackgroundFetchResultNewData);
   return YES;
 }
 
@@ -333,7 +337,13 @@ static FlutterPluginRegistrantCallback registerPlugins = nil;
 - (void) invokeMethod:(NSString *) method callbackHandle:(long)handle arguments:(NSDictionary*)arguments {
     NSLog(@"Invoking method: %@", method);
     NSArray* args = @[@(handle), arguments];
-    [_isolateChannel invokeMethod:method arguments:args];
+    [_isolateChannel invokeMethod:method arguments:args result:^(id  _Nullable result) {
+        NSLog(@"%@ method completed", method);
+        if (fetchCompletionHandler!=nil) {
+            fetchCompletionHandler(UIBackgroundFetchResultNewData);
+            fetchCompletionHandler = nil;
+        }
+    }];
 }
 
 
